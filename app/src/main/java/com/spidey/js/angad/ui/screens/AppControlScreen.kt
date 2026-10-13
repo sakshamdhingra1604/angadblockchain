@@ -24,9 +24,14 @@ import androidx.compose.ui.unit.sp
 import com.spidey.js.angad.ui.components.DivineBackground
 import com.spidey.js.angad.ui.theme.*
 import com.spidey.js.angad.util.PreferencesManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class AppData(val name: String, val packageName: String, val isSystem: Boolean)
+
+// In-memory cache so subsequent tab navigations are instantaneous
+private var cachedApps: List<AppData>? = null
 
 @Composable
 fun AppControlScreen() {
@@ -39,28 +44,44 @@ fun AppControlScreen() {
     var selectedFilter by remember { mutableStateOf("All") }
     val filters = listOf("All", "Allowed", "Blocked", "System")
 
-    val apps = remember {
-        val pm = context.packageManager
-        pm.getInstalledApplications(PackageManager.GET_META_DATA)
-            .filter { it.packageName != context.packageName }
-            .map { app ->
-                AppData(
-                    name = pm.getApplicationLabel(app).toString(),
-                    packageName = app.packageName,
-                    isSystem = (app.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-                )
-            }.sortedBy { it.name }
+    var apps by remember { mutableStateOf<List<AppData>>(cachedApps ?: emptyList()) }
+    var isLoading by remember { mutableStateOf(cachedApps == null) }
+
+    LaunchedEffect(Unit) {
+        if (cachedApps == null) {
+            withContext(Dispatchers.IO) {
+                val pm = context.packageManager
+                // Flag 0 avoids loading metadata bundles for all apps (10x faster)
+                val list = pm.getInstalledApplications(0)
+                    .filter { it.packageName != context.packageName }
+                    .map { app ->
+                        AppData(
+                            name = pm.getApplicationLabel(app).toString(),
+                            packageName = app.packageName,
+                            isSystem = (app.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                        )
+                    }.sortedBy { it.name.lowercase() }
+                cachedApps = list
+                withContext(Dispatchers.Main) {
+                    apps = list
+                    isLoading = false
+                }
+            }
+        }
     }
 
-    val filteredApps = apps.filter { app ->
-        val matchesSearch = app.name.contains(searchQuery, ignoreCase = true)
-        val matchesFilter = when (selectedFilter) {
-            "Allowed" -> !blockedPackages.contains(app.packageName)
-            "Blocked" -> blockedPackages.contains(app.packageName)
-            "System" -> app.isSystem
-            else -> true
+    val filteredApps = remember(apps, searchQuery, selectedFilter, blockedPackages) {
+        apps.filter { app ->
+            val matchesSearch = app.name.contains(searchQuery, ignoreCase = true) ||
+                    app.packageName.contains(searchQuery, ignoreCase = true)
+            val matchesFilter = when (selectedFilter) {
+                "Allowed" -> !blockedPackages.contains(app.packageName)
+                "Blocked" -> blockedPackages.contains(app.packageName)
+                "System" -> app.isSystem
+                else -> true
+            }
+            matchesSearch && matchesFilter
         }
-        matchesSearch && matchesFilter
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -74,15 +95,13 @@ fun AppControlScreen() {
                 )
             )
 
-
-
-
             Text("MANAGE APP PERMISSIONS", style = MaterialTheme.typography.labelSmall, color = DivineSaffron)
 
             Spacer(modifier = Modifier.height(16.dp))
 
             OutlinedTextField(
-                value = searchQuery, onValueChange = { searchQuery = it },
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = { Text("Search scroll of apps...", color = TextMuted) },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = RoyalGold) },
@@ -98,8 +117,14 @@ fun AppControlScreen() {
 
             ScrollableTabRow(
                 selectedTabIndex = filters.indexOf(selectedFilter),
-                edgePadding = 0.dp, containerColor = Color.Transparent, divider = {}, indicator = { tabPositions ->
-                    TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(tabPositions[filters.indexOf(selectedFilter)]), color = RoyalGold)
+                edgePadding = 0.dp,
+                containerColor = Color.Transparent,
+                divider = {},
+                indicator = { tabPositions ->
+                    TabRowDefaults.SecondaryIndicator(
+                        Modifier.tabIndicatorOffset(tabPositions[filters.indexOf(selectedFilter)]),
+                        color = RoyalGold
+                    )
                 }
             ) {
                 filters.forEach { filter ->
@@ -113,10 +138,43 @@ fun AppControlScreen() {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(filteredApps) { app ->
-                    DivineAppRow(app, blockedPackages.contains(app.packageName)) { isBlocked ->
-                        scope.launch { prefManager.togglePackageBlock(app.packageName, isBlocked) }
+            if (isLoading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(color = RoyalGold)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            "Scanning installed armory...",
+                            color = TextMuted,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+            } else if (filteredApps.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("No applications found.", color = TextMuted)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(filteredApps, key = { it.packageName }) { app ->
+                        DivineAppRow(app, blockedPackages.contains(app.packageName)) { isBlocked ->
+                            scope.launch { prefManager.togglePackageBlock(app.packageName, isBlocked) }
+                        }
                     }
                 }
             }
@@ -136,7 +194,8 @@ fun DivineAppRow(app: AppData, isBlocked: Boolean, onToggle: (Boolean) -> Unit) 
                 modifier = Modifier.size(44.dp).clip(CircleShape).background(RoyalGold.copy(0.1f)),
                 contentAlignment = Alignment.Center
             ) {
-                Text(app.name.first().toString(), color = RoyalGold, fontWeight = FontWeight.Bold)
+                val initialChar = app.name.firstOrNull()?.uppercaseChar()?.toString() ?: "?"
+                Text(initialChar, color = RoyalGold, fontWeight = FontWeight.Bold)
             }
             Spacer(modifier = Modifier.width(16.dp))
             Column(modifier = Modifier.weight(1f)) {

@@ -26,11 +26,11 @@ class AngadModelEngine(private val context: Context) {
         private const val MODEL2_PATH = "ml/shieldnet_quantized_dynamic.tflite"
         private const val MODEL2_FALLBACK_PATH = "ml/shieldnet.tflite"
         // MODEL 3: Payload Byte Classifier — built by team, takes DNS query raw bytes
-        // Input: [1, 262] = 256 byte-frequency features + 6 stats (entropy, length, etc.)
+        // Input: [1, 266] = causal byte features (log length, entropy, printable, zeros, 6 structural, 256 histogram)
         // Output: [1, 1] = 0.0 (safe) / 1.0 (malicious DNS pattern)
         // Catches: DNS tunneling, C2 beaconing, DGA via DNS query bytes
         private const val MODEL3_PATH = "ml/deep_classifier_payload.tflite"
-        private const val MODEL3_INPUT_SIZE = 262
+        private const val MODEL3_INPUT_SIZE = 266
         
         const val SAFE_THRESHOLD = 0.25f
         const val WARN_THRESHOLD = 0.35f
@@ -152,10 +152,11 @@ class AngadModelEngine(private val context: Context) {
 
             // Domain Heuristic score (ensures network baseline doesn't stay 0 on obvious malicious patterns)
             val heuristicScore = (
-                (if (f41[27] > 0.5f) 0.35f else 0.0f) + // Risky TLD
-                (f41[28] * 0.40f) +                    // Phishing keywords
-                (if (f41[31] > 0.5f) 0.35f else 0.0f) + // Brand mismatch
-                (if (f41[20] > 0.45f) 0.20f else 0.0f)  // High entropy
+                (if (f41[16] > 0.5f) 0.35f else 0.0f) + // Risky TLD
+                (((f41[26] + f41[28] + f41[30] + f41[31]).coerceAtMost(1f)) * 0.40f) + // Phishing keywords
+                (if (f41[32] > 0.3f || f41[38] > 0.5f) 0.35f else 0.0f) + // Brand mismatch / spoofing
+                (if (f41[17] > 0.5f || f41[40] > 0.0f) 0.40f else 0.0f) + // Punycode / Homograph
+                (if (f41[10] > 3.8f) 0.20f else 0.0f)  // High entropy
             ).coerceIn(0f, 1f)
             val effectiveScore1 = maxOf(score1, heuristicScore)
 
@@ -238,13 +239,14 @@ class AngadModelEngine(private val context: Context) {
             }
 
             val reasons = mutableListOf<String>()
-            if (f41[20] > 0.45f || f41[21] > 0.45f) reasons.add("DGA Pattern Detected (High Entropy)")
-            if (f41[27] > 0.5f) reasons.add("Risky TLD Profile (.tk, .xyz, etc)")
-            if (f41[28] > 0.15f) reasons.add("Deceptive / Phishing Keywords Found")
-            if (f41[31] > 0.5f) reasons.add("Brand Impersonation / Mismatch Detected")
-            if (f41[18] > 0.4f) reasons.add("Excessive Subdomains Detected")
-            if (f41[23] > 0.5f) reasons.add("Raw IP Address Host (No Domain)")
-            if (f41[24] > 0.5f) reasons.add("Punycode / Homograph Threat Detected")
+            if (f41[10] > 3.8f) reasons.add("DGA Pattern Detected (High Entropy)")
+            if (f41[16] > 0.5f) reasons.add("Risky TLD Profile (.tk, .xyz, etc)")
+            if (f41[26] > 0.5f || f41[28] > 0.5f || f41[30] > 0.5f || f41[31] > 0.5f) reasons.add("Deceptive / Phishing Keywords Found")
+            if (f41[32] > 0.3f || f41[38] > 0.5f) reasons.add("Brand Impersonation / Mismatch Detected")
+            if (f41[34] > 0.5f) reasons.add("Excessive Subdomains Detected")
+            if (f41[14] > 0.5f) reasons.add("Raw IP Address Host (No Domain)")
+            if (f41[17] > 0.5f || f41[40] > 0.0f) reasons.add("Punycode / Homograph Threat Detected")
+            if (f41[25] > 0.5f) reasons.add("Dangerous / Suspicious File Extension")
             if (score2 > 0.5f && shieldNetClass != "Safe") reasons.add("ShieldNet AI: $shieldNetClass Threat")
             if (score3 > 0.6f) reasons.add("Suspicious DNS Payload Byte Pattern (PayloadNet)")
             if (finalScore >= BLOCK_THRESHOLD && reasons.isEmpty()) reasons.add("Tri-Model Consensus Threat")
@@ -301,58 +303,72 @@ class AngadModelEngine(private val context: Context) {
     }
 
     /**
-     * Extracts 262 normalized features from raw DNS/domain bytes for PayloadNet classifier.
-     * 
-     * Feature layout (matches training data of deep_classifier_payload.tflite):
-     *   [0..255]  = byte frequency histogram (normalized 0.0-1.0, count/total_length)
-     *   [256]     = normalized length (bytes.size / 512.0)
-     *   [257]     = Shannon entropy (0.0-1.0 scale, normalized by log2(256))
-     *   [258]     = printable ASCII ratio (count of bytes 32-126 / total)
-     *   [259]     = max consecutive same byte run / total length
-     *   [260]     = unique byte count / 256 (diversity)
-     *   [261]     = null byte ratio (byte 0x00 count / total)
+     * Extracts 266 normalized causal features from raw DNS/domain bytes for PayloadNet classifier.
+     * Matches netguard/payload_model.py schema (format: netguard-initial-payload-v2).
      */
     private fun extractPayloadFeatures(bytes: ByteArray): FloatArray {
         val features = FloatArray(MODEL3_INPUT_SIZE) { 0f }
         if (bytes.isEmpty()) return features
 
-        val n = bytes.size.toFloat()
+        val sample = if (bytes.size > 512) bytes.copyOfRange(0, 512) else bytes
+        val total = sample.size.toFloat().coerceAtLeast(1f)
 
-        // [0..255]: byte frequency histogram
-        val freq = IntArray(256)
-        for (b in bytes) freq[b.toInt() and 0xFF]++
-        for (i in 0..255) features[i] = freq[i] / n
+        // byte counts (0..255)
+        val counts = IntArray(256)
+        for (b in sample) counts[b.toInt() and 0xFF]++
 
-        // [256]: normalized length
-        features[256] = (n / 512f).coerceIn(0f, 1f)
+        // 0: log1p(sample.size)
+        features[0] = kotlin.math.ln(1.0 + sample.size).toFloat()
 
-        // [257]: Shannon entropy normalized by log2(256)=8
+        // 1: Shannon entropy
         var entropy = 0.0
         for (i in 0..255) {
-            if (freq[i] > 0) {
-                val p = freq[i] / n
-                entropy -= p * Math.log(p.toDouble()) / Math.log(2.0)
+            if (counts[i] > 0) {
+                val p = counts[i].toDouble() / total.toDouble()
+                entropy -= p * (kotlin.math.ln(p) / kotlin.math.ln(2.0))
             }
         }
-        features[257] = (entropy / 8.0).toFloat().coerceIn(0f, 1f)
+        features[1] = entropy.toFloat()
 
-        // [258]: printable ASCII ratio (bytes 32-126)
-        val printable = bytes.count { it.toInt() in 32..126 }
-        features[258] = printable / n
+        // 2: printable ratio (bytes 32..126)
+        val printable = sample.count { it.toInt() in 32..126 }
+        features[2] = printable.toFloat() / total
 
-        // [259]: max consecutive same-byte run / length
-        var maxRun = 1; var curRun = 1
-        for (i in 1 until bytes.size) {
-            if (bytes[i] == bytes[i - 1]) { curRun++; if (curRun > maxRun) maxRun = curRun }
-            else curRun = 1
+        // 3: zeros ratio (byte 0x00)
+        features[3] = counts[0].toFloat() / total
+
+        // 4..9: structural features
+        val isTls = sample.size >= 2 && sample[0] == 0x16.toByte() && sample[1] == 0x03.toByte()
+        features[4] = if (isTls) 1f else 0f
+
+        val httpPrefixes = listOf("GET ", "POST ", "PUT ", "HEAD ", "DELETE ", "OPTIONS ", "PATCH ")
+        val sampleStr = sample.take(16).toByteArray().toString(Charsets.ISO_8859_1)
+        val isHttp = httpPrefixes.any { sampleStr.startsWith(it) }
+        features[5] = if (isHttp) 1f else 0f
+
+        val checkLen = minOf(sample.size, 128)
+        var hasCrlf = false
+        for (i in 0 until checkLen - 1) {
+            if (sample[i] == '\r'.code.toByte() && sample[i + 1] == '\n'.code.toByte()) {
+                hasCrlf = true
+                break
+            }
         }
-        features[259] = (maxRun / n).coerceIn(0f, 1f)
+        features[6] = if (hasCrlf) 1f else 0f
 
-        // [260]: unique byte diversity
-        features[260] = (freq.count { it > 0 } / 256f).coerceIn(0f, 1f)
+        val control = sample.count { 
+            val v = it.toInt() and 0xFF
+            v < 32 && v != 9 && v != 10 && v != 13 
+        }
+        features[7] = control.toFloat() / total
 
-        // [261]: null byte ratio
-        features[261] = (freq[0] / n).coerceIn(0f, 1f)
+        features[8] = counts[32].toFloat() / total // space ratio
+        features[9] = (sample[0].toInt() and 0xFF).toFloat() / 255f // first byte value
+
+        // 10..265: byte frequency histogram (256 values)
+        for (i in 0..255) {
+            features[10 + i] = counts[i].toFloat() / total
+        }
 
         return features
     }

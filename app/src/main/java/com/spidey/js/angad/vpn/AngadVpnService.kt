@@ -38,6 +38,9 @@ class AngadVpnService : VpnService() {
     private lateinit var prefManager: PreferencesManager
     private var modelEngine: AngadModelEngine? = null
     private val blockedPackages = HashSet<String>()
+    private val tunLock = Any()
+    private val eventInsertCounter = java.util.concurrent.atomic.AtomicInteger(0)
+    private var lastGlobalNotifTime = 0L
 
     companion object {
         private const val TAG = "AngadVpnService"
@@ -49,7 +52,9 @@ class AngadVpnService : VpnService() {
         private val _isServiceRunning = MutableStateFlow(false)
         val isServiceRunning = _isServiceRunning.asStateFlow()
         
-        private const val REAL_DNS_IP = "8.8.4.4"
+        private const val REAL_DNS_PRIMARY = "8.8.4.4"
+        private const val REAL_DNS_FALLBACK = "1.1.1.1"
+        private const val REAL_DNS_IP = REAL_DNS_PRIMARY
     }
 
     override fun onCreate() {
@@ -102,6 +107,13 @@ class AngadVpnService : VpnService() {
 
             if (vpnInterface != null) {
                 _isServiceRunning.value = true
+                serviceScope.launch {
+                    try {
+                        database.dnsEventDao().pruneOldEvents(2000)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Startup pruning failed", e)
+                    }
+                }
                 startPacketLoop()
             } else {
                 stopSelf()
@@ -172,7 +184,9 @@ class AngadVpnService : VpnService() {
                         logAndNotifyBlock(dnsQuestion.domain, dstIp.hostAddress ?: "", appInfo, finalVerdict)
                         val response = PacketParser.createSinkholeResponse(data, dnsOffset, dnsLen)
                         val ipResponse = buildIpUdpPacket(dstIp, dstPort, srcIp, srcPort, response, response.size)
-                        outputStream.write(ipResponse)
+                        synchronized(tunLock) {
+                            outputStream.write(ipResponse)
+                        }
                     } else {
                         logDomainEvent(dnsQuestion.domain, dstIp.hostAddress ?: "", "DNS", appInfo, result.mlVerdict, false)
                         // SPEED FIX: Launch proxy in a separate job so we don't block the loop
@@ -198,6 +212,18 @@ class AngadVpnService : VpnService() {
         return VerdictResult(ml, ml.score >= threshold)
     }
 
+    private fun checkAndPruneEvents() {
+        if (eventInsertCounter.incrementAndGet() % 500 == 0) {
+            serviceScope.launch {
+                try {
+                    database.dnsEventDao().pruneOldEvents(2000)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Periodic pruning failed", e)
+                }
+            }
+        }
+    }
+
     private fun logAndNotifyBlock(domain: String, ip: String, app: AppInfo, verdict: AngadModelEngine.ModelVerdict) {
         serviceScope.launch {
             try {
@@ -209,6 +235,7 @@ class AngadVpnService : VpnService() {
                     aiMetadata = metadata
                 ))
                 Log.d(TAG, "Logged block event for: $domain ($ip)")
+                checkAndPruneEvents()
                 
                 // Report to global blockchain
                 BlockchainClient.reportThreat(domain, ip, verdict.classification, verdict.score)
@@ -231,6 +258,7 @@ class AngadVpnService : VpnService() {
                     aiMetadata = metadata
                 ))
                 Log.d(TAG, "Logged $type event for: $domain ($ip)")
+                checkAndPruneEvents()
                 
                 if (isBlocked) {
                     BlockchainClient.reportThreat(domain, ip, verdict.classification, verdict.score)
@@ -243,12 +271,17 @@ class AngadVpnService : VpnService() {
 
     private fun showBlockNotification(domain: String, appLabel: String, verdict: AngadModelEngine.ModelVerdict) {
         val now = System.currentTimeMillis()
-        val lastTime = notificationDebounce.get(domain) ?: 0L
-        if (now - lastTime < 60_000L) {
-            // Anti-Spam: Suppress duplicate notification within 60 seconds
+        val lastDomainTime = notificationDebounce.get(domain) ?: 0L
+        if (now - lastDomainTime < 60_000L) {
+            // Anti-Spam: Suppress duplicate notification for the same domain within 60 seconds
+            return
+        }
+        // Global Throttle: Prevent rapid sound/buzz bursts if background apps spam queries
+        if (now - lastGlobalNotifTime < 8_000L) {
             return
         }
         notificationDebounce.put(domain, now)
+        lastGlobalNotifTime = now
 
         val alertIntent = Intent(this, com.spidey.js.angad.ThreatAlertActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -259,13 +292,8 @@ class AngadVpnService : VpnService() {
             putExtra(com.spidey.js.angad.ThreatAlertActivity.EXTRA_REASONS, verdict.reasons.toTypedArray())
         }
 
-        try {
-            startActivity(alertIntent)
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not start alert activity directly", e)
-        }
-
-        val fullScreenPendingIntent = PendingIntent.getActivity(
+        // Tap on notification opens ThreatAlertActivity smoothly
+        val contentPendingIntent = PendingIntent.getActivity(
             this,
             domain.hashCode(),
             alertIntent,
@@ -276,30 +304,56 @@ class AngadVpnService : VpnService() {
             .setSmallIcon(android.R.drawable.stat_notify_error)
             .setContentTitle("🛡️ Phishing Threat Blocked")
             .setContentText("Blocked $domain accessed by $appLabel")
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setDefaults(NotificationCompat.DEFAULT_ALL)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setFullScreenIntent(fullScreenPendingIntent, true)
-            .setContentIntent(fullScreenPendingIntent)
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText("Angad blocked suspicious domain $domain (accessed by $appLabel). Tap to view full threat insight or whitelist.")
+            )
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(contentPendingIntent)
             .setAutoCancel(true)
             .build()
+
         getSystemService(NotificationManager::class.java)?.notify(domain.hashCode(), notification)
     }
 
-    private fun proxyDnsQuery(data: ByteArray, dnsOffset: Int, dnsLen: Int, srcIp: InetAddress, srcPort: Int, dstIp: InetAddress, dstPort: Int, outputStream: FileOutputStream) {
-        serviceScope.launch {
+    private suspend fun proxyDnsQuery(
+        data: ByteArray,
+        dnsOffset: Int,
+        dnsLen: Int,
+        srcIp: InetAddress,
+        srcPort: Int,
+        dstIp: InetAddress,
+        dstPort: Int,
+        outputStream: FileOutputStream
+    ) = withContext(Dispatchers.IO) {
+        val servers = listOf(REAL_DNS_PRIMARY, REAL_DNS_FALLBACK)
+        for (dnsServer in servers) {
+            var success = false
             try {
-                val socket = DatagramSocket()
-                protect(socket)
-                socket.send(DatagramPacket(data, dnsOffset, dnsLen, InetAddress.getByName(REAL_DNS_IP), 53))
-                val buffer = ByteArray(4096)
-                val packet = DatagramPacket(buffer, buffer.size)
-                socket.soTimeout = 5000
-                socket.receive(packet)
-                val ipResponse = buildIpUdpPacket(dstIp, dstPort, srcIp, srcPort, packet.data, packet.length)
-                withContext(Dispatchers.IO) { outputStream.write(ipResponse) }
-                socket.close()
-            } catch (e: Exception) {}
+                DatagramSocket().use { socket ->
+                    protect(socket)
+                    socket.soTimeout = 2500
+                    val queryPacket = DatagramPacket(
+                        data, dnsOffset, dnsLen,
+                        InetAddress.getByName(dnsServer), 53
+                    )
+                    socket.send(queryPacket)
+                    val buffer = ByteArray(4096)
+                    val responsePacket = DatagramPacket(buffer, buffer.size)
+                    socket.receive(responsePacket)
+                    val ipResponse = buildIpUdpPacket(
+                        dstIp, dstPort, srcIp, srcPort,
+                        responsePacket.data, responsePacket.length
+                    )
+                    synchronized(tunLock) {
+                        outputStream.write(ipResponse)
+                    }
+                    success = true
+                }
+            } catch (e: Exception) {
+                // Timeout or network error; try fallback DNS server
+            }
+            if (success) break
         }
     }
 

@@ -57,7 +57,7 @@ fun ThreatLogScreen() {
                 }
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    items(threatLogs) { log ->
+                    items(threatLogs, key = { it.id }) { log ->
                         DivineThreatItem(log) { selectedEvent = log }
                     }
                 }

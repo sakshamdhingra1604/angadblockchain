@@ -110,7 +110,7 @@ fun TrafficMonitorScreen() {
             Spacer(modifier = Modifier.height(12.dp))
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(dnsEvents) { event ->
+                items(dnsEvents, key = { it.id }) { event ->
                     DivineDnsRow(event) { selectedEvent = event }
                 }
             }

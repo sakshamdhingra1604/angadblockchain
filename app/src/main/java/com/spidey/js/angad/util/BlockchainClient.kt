@@ -10,7 +10,8 @@ import java.util.concurrent.TimeUnit
 
 object BlockchainClient {
     private const val TAG = "BlockchainClient"
-    private const val BASE_URL = "https://cherisher-sprig-amigo.ngrok-free.dev"
+    private const val BASE_URL =
+        "https://announcement-auction-plants-owner.trycloudflare.com"
     
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)

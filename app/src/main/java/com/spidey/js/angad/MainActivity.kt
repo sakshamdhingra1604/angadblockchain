@@ -13,7 +13,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import com.spidey.js.angad.ui.MainNavigation
+import com.spidey.js.angad.ui.screens.AngadSplashScreen
 import com.spidey.js.angad.ui.theme.AngadTheme
 import com.spidey.js.angad.util.PreferencesManager
 import com.spidey.js.angad.vpn.AngadVpnService
@@ -42,7 +47,12 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             AngadTheme {
-                MainNavigation()
+                var showSplash by remember { mutableStateOf(true) }
+                if (showSplash) {
+                    AngadSplashScreen(onFinish = { showSplash = false })
+                } else {
+                    MainNavigation()
+                }
             }
         }
 

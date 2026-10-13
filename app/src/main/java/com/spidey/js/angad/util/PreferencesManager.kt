@@ -24,7 +24,7 @@ class PreferencesManager(private val context: Context) {
     val blockedPackages: Flow<Set<String>> = context.dataStore.data.map { it[BLOCKED_PACKAGES] ?: emptySet() }
     val allowlistDomains: Flow<Set<String>> = context.dataStore.data.map { it[ALLOWLIST_DOMAINS] ?: emptySet() }
     val denylistDomains: Flow<Set<String>> = context.dataStore.data.map { it[DENYLIST_DOMAINS] ?: emptySet() }
-    val sensitivityThreshold: Flow<Float> = context.dataStore.data.map { it[SENSITIVITY_THRESHOLD] ?: 0.55f }
+    val sensitivityThreshold: Flow<Float> = context.dataStore.data.map { it[SENSITIVITY_THRESHOLD] ?: 0.70f }
     val autoRestart: Flow<Boolean> = context.dataStore.data.map { it[AUTO_RESTART] ?: true }
     val notificationsEnabled: Flow<Boolean> = context.dataStore.data.map { it[NOTIFICATIONS_ENABLED] ?: true }
     val vpnEnabledState: Flow<Boolean> = context.dataStore.data.map { it[VPN_ENABLED_STATE] ?: false }

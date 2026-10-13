@@ -46,7 +46,7 @@ fun HomeScreen() {
     val database = AngadDatabase.getDatabase(context)
     val isVpnActive by AngadVpnService.isServiceRunning.collectAsState()
     
-    val recentActivity by database.dnsEventDao().getAllEvents().collectAsState(initial = emptyList())
+    val recentActivity by database.dnsEventDao().getRecentEvents(10).collectAsState(initial = emptyList())
     val scannedCount by database.dnsEventDao().getTotalCount().collectAsState(initial = 0)
     val blockedCount by database.dnsEventDao().getBlockedCount().collectAsState(initial = 0)
     val activeAppsCount by database.dnsEventDao().getActiveAppsCount().collectAsState(initial = 0)
@@ -74,7 +74,7 @@ fun HomeScreen() {
             }
 
             item {
-                ActivityFeedSection(recentActivity.take(10)) { event ->
+                ActivityFeedSection(recentActivity) { event ->
                     selectedEvent = event
                 }
             }
@@ -256,11 +256,13 @@ fun ActivityFeedSection(activities: List<DnsEvent>, onItemClick: (DnsEvent) -> U
         }
         
         activities.forEach { event ->
-            AnimatedVisibility(
-                visible = true,
-                enter = fadeIn() + slideInHorizontally()
-            ) {
-                DivineActivityRow(event) { onItemClick(event) }
+            key(event.id) {
+                AnimatedVisibility(
+                    visible = true,
+                    enter = fadeIn() + slideInHorizontally()
+                ) {
+                    DivineActivityRow(event) { onItemClick(event) }
+                }
             }
         }
     }

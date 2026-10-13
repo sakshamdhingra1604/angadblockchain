@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,9 @@ import (
 	"sync"
 	"time"
 )
+
+//go:embed dashboard.html
+var defaultDashboardHTML []byte
 
 // Transaction represents a threat domain or IP payload stored on-chain
 type Transaction struct {
@@ -361,6 +365,22 @@ func main() {
 	if !chain.loadFromFile() {
 		chain.InitGenesisBlock()
 	}
+
+	// GET / (Serve Web Dashboard Explorer)
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" && r.URL.Path != "/index.html" && r.URL.Path != "/dashboard" {
+			http.NotFound(w, r)
+			return
+		}
+		// Try reading disk first for instant updates
+		if content, err := os.ReadFile("dashboard.html"); err == nil && len(content) > 0 {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(content)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(defaultDashboardHTML)
+	})
 
 	// GET /health
 	http.HandleFunc("/health", withCORS(func(w http.ResponseWriter, r *http.Request) {

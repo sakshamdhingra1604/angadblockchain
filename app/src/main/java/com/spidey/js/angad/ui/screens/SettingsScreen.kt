@@ -16,6 +16,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.spidey.js.angad.db.AngadDatabase
 import com.spidey.js.angad.ui.theme.*
 import com.spidey.js.angad.util.PreferencesManager
 import kotlinx.coroutines.launch
@@ -75,9 +76,37 @@ fun SettingsScreen() {
                 }
             }
 
+            SettingsSection("DATABASE & STORAGE") {
+                SettingsItem("Auto-Retention Policy", "Active (Capped at 2,000 events)")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(text = "Clear Event Logs", style = MaterialTheme.typography.titleMedium, color = AncientWhite)
+                        Text(text = "Purge local DNS queries and threat logs", style = MaterialTheme.typography.bodySmall, color = TextMuted)
+                    }
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                AngadDatabase.getDatabase(context).dnsEventDao().clearAll()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = LavaCrimson.copy(alpha = 0.8f)),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text("Purge", color = AncientWhite, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+
             SettingsSection("SYSTEM") {
                 SettingsItem("Main Model", "CICIDS2017 Core (65 Params)")
-                SettingsItem("Ensemble Model", "ShieldNet v1.0 (42 Params)")
+                SettingsItem("Ensemble Model", "ShieldNet v2.0 (41 Features - Safe Corpus)")
                 SettingsItem("Check for Updates", "Last checked: Today, 10:45 AM")
             }
 

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "classes": [
+    "safe",
+    "phishing",
+    "malware",
+    "data_leak",
+    "scam"
+  ],
+  "method": "temperature_scaling",
+  "temperature": 1.1110604873372174,
+  "fitted_samples": 37590
+}

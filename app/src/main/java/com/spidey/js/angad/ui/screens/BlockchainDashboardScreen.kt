@@ -103,7 +103,7 @@ fun BlockchainDashboardScreen() {
                         )
                     }
 
-                    items(chain) { block ->
+                    items(chain, key = { it.index }) { block ->
                         BlockItem(block)
                     }
                 }

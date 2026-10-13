@@ -101,10 +101,15 @@ sudo systemctl start cloudflared
 
 Test that everything is reachable:
 
-- **Local:**
+- **Local Web Dashboard & Explorer:**
+  Open in browser: `http://localhost:8080/`
+
+- **Local API Endpoints:**
   ```bash
   curl http://localhost:8080/health
   curl http://localhost:8080/stats
+  curl http://localhost:8080/chain
+  curl http://localhost:8080/validate
   ```
 
 - **Via Cloudflare Tunnel:**

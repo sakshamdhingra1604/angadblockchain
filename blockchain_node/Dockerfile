@@ -6,6 +6,7 @@ WORKDIR /app
 # Copy dependency files and source code
 COPY go.mod ./
 COPY main.go ./
+COPY dashboard.html ./
 
 # Build statically linked binary
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o angad-blockchain main.go
